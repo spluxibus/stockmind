@@ -1,0 +1,19 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(unzip -l files.zip)",
+      "Bash(python -c \"import sys,json; data=json.load\\(sys.stdin\\); print\\(data[0][''text'']\\)\")",
+      "Bash(npx create-next-app@latest . --typescript --tailwind --eslint --app --src-dir --import-alias \"@/*\" --yes)",
+      "Bash(TARGET=\"C:\\\\Users\\\\splux\\\\OneDrive\\\\Desktop\\\\Stockmind\\\\.claude\\\\worktrees\\\\nice-curie\")",
+      "Bash(SOURCE=\"C:\\\\Users\\\\splux\\\\OneDrive\\\\Desktop\\\\Stockmind\\\\.claude\\\\worktrees\\\\stockmind-temp\")",
+      "Bash(for f in README.md eslint.config.mjs next-env.d.ts next.config.ts package.json postcss.config.mjs tsconfig.json)",
+      "Bash(do cp \"$SOURCE/$f\" \"$TARGET/$f\")",
+      "Bash(echo \"Copied $f\")",
+      "Bash(done)",
+      "Bash(npm install @supabase/supabase-js @supabase/ssr @google/genai zod recharts lightweight-charts lucide-react date-fns @react-pdf/renderer zod-to-json-schema)",
+      "Bash(npm run build)",
+      "Bash(npx shadcn@latest init -d --base-color slate)",
+      "Bash(npx shadcn@latest init -d)"
+    ]
+  }
+}
