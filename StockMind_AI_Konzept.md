@@ -143,5 +143,3 @@ Die Plattform basiert auf einem Multi-Agenten-System, das verschiedene spezialis
 
 *Weiter: [Monetarisierung →](./StockMind_AI_Monetarisierung.md)*
 
----
-*Erstellt mit Pragmatica AI Research | Vertraulich | März 2025*
