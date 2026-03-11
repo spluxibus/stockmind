@@ -2,7 +2,7 @@ import { GoogleGenAI } from "@google/genai";
 import { GeminiError } from "@/lib/utils/errors";
 import { z } from "zod";
 
-const MODEL_FAST = "gemini-2.5-flash-preview-05-20";
+const MODEL_FAST = "gemini-2.5-flash";
 
 class GeminiService {
   private ai: GoogleGenAI;

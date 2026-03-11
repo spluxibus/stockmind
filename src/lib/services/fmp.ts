@@ -31,7 +31,8 @@ import {
 import { FMPError, RateLimitError } from "@/lib/utils/errors";
 import { z } from "zod";
 
-const BASE_URL = "https://financialmodelingprep.com/api";
+// FMP migrated from /api/v3 to /stable in 2025.
+const BASE_URL = "https://financialmodelingprep.com/stable";
 
 class FMPService {
   private apiKey: string;
@@ -55,7 +56,7 @@ class FMPService {
     let response: Response;
     try {
       response = await fetch(url.toString(), {
-        next: { revalidate: 0 }, // No caching at fetch level; we handle this in our cache service
+        next: { revalidate: 0 },
       });
     } catch (err) {
       throw new FMPError(`Network error calling FMP: ${String(err)}`);
@@ -71,14 +72,12 @@ class FMPService {
 
     const data = await response.json();
 
-    // FMP sometimes returns error objects
     if (data && typeof data === "object" && "Error Message" in data) {
       throw new FMPError(data["Error Message"] as string);
     }
 
     if (!schema) return data as T;
 
-    // Try to validate; if it fails, return raw data with a warning
     try {
       if (Array.isArray(data)) {
         return z.array(schema).parse(data) as T;
@@ -86,42 +85,73 @@ class FMPService {
       return schema.parse(data) as T;
     } catch (err) {
       console.warn(`FMP schema validation warning for ${endpoint}:`, err);
-      return data as T; // Return raw data if validation fails
+      return data as T;
     }
   }
 
   // ─── Company Data ──────────────────────────────────────────────────────────
 
   async getCompanyProfile(ticker: string): Promise<CompanyProfile> {
-    const data = await this.fetchFMP<CompanyProfile[]>(
-      `/v3/profile/${ticker.toUpperCase()}`
-    );
+    const data = await this.fetchFMP<Record<string, unknown>[]>(`/profile`, {
+      symbol: ticker.toUpperCase(),
+    });
     const profiles = Array.isArray(data) ? data : [data];
-    if (!profiles.length) throw new FMPError(`No profile found for ${ticker}`);
-    return CompanyProfileSchema.parse(profiles[0]);
+    if (!profiles.length || !profiles[0]) throw new FMPError(`No profile found for ${ticker}`);
+
+    // Map new field names → old schema field names
+    const raw = profiles[0] as Record<string, unknown>;
+    const mapped = {
+      ...raw,
+      mktCap: (raw.marketCap ?? raw.mktCap ?? 0) as number,
+      lastDiv: (raw.lastDividend ?? raw.lastDiv ?? 0) as number,
+      changes: (raw.change ?? raw.changes ?? 0) as number,
+      volAvg: (raw.averageVolume ?? raw.volAvg ?? 0) as number,
+      exchangeShortName: (raw.exchangeFullName ?? raw.exchangeShortName ?? raw.exchange ?? "") as string,
+    };
+
+    return CompanyProfileSchema.parse(mapped);
   }
 
   async getStockQuote(ticker: string): Promise<StockQuote> {
-    const data = await this.fetchFMP<StockQuote[]>(
-      `/v3/quote/${ticker.toUpperCase()}`
-    );
+    const data = await this.fetchFMP<Record<string, unknown>[]>(`/quote`, {
+      symbol: ticker.toUpperCase(),
+    });
     const quotes = Array.isArray(data) ? data : [data];
-    if (!quotes.length) throw new FMPError(`No quote found for ${ticker}`);
-    return StockQuoteSchema.parse(quotes[0]);
+    if (!quotes.length || !quotes[0]) throw new FMPError(`No quote found for ${ticker}`);
+
+    // Map changePercentage → changesPercentage (field renamed in stable API)
+    const raw = quotes[0] as Record<string, unknown>;
+    const mapped = {
+      ...raw,
+      changesPercentage: (raw.changePercentage ?? raw.changesPercentage ?? 0) as number,
+    };
+
+    return StockQuoteSchema.parse(mapped);
   }
 
   async searchTicker(query: string, limit = 10): Promise<TickerSearchResult[]> {
-    const data = await this.fetchFMP<TickerSearchResult[]>(
-      `/v3/search`,
-      { query, limit: String(limit), exchange: "NASDAQ,NYSE" }
-    );
-    const results = Array.isArray(data) ? data : [];
-    return results
-      .map((r) => {
-        try { return TickerSearchResultSchema.parse(r); }
-        catch { return null; }
-      })
-      .filter(Boolean) as TickerSearchResult[];
+    try {
+      // /stable/search-symbol works for both ticker and name lookups
+      const data = await this.fetchFMP<Record<string, unknown>[]>(`/search-symbol`, {
+        query,
+        limit: String(limit),
+      });
+      const results = Array.isArray(data) ? data : [];
+      return results
+        .map((r) => {
+          try {
+            const mapped = {
+              ...r,
+              stockExchange: (r.exchangeFullName ?? r.stockExchange ?? "") as string,
+              exchangeShortName: (r.exchange ?? r.exchangeShortName ?? "") as string,
+            };
+            return TickerSearchResultSchema.parse(mapped);
+          } catch { return null; }
+        })
+        .filter(Boolean) as TickerSearchResult[];
+    } catch {
+      return [];
+    }
   }
 
   // ─── Financial Statements ──────────────────────────────────────────────────
@@ -132,8 +162,8 @@ class FMPService {
     limit = 5
   ): Promise<IncomeStatement[]> {
     const data = await this.fetchFMP<IncomeStatement[]>(
-      `/v3/income-statement/${ticker.toUpperCase()}`,
-      { period, limit: String(limit) }
+      `/income-statement`,
+      { symbol: ticker.toUpperCase(), period, limit: String(limit) }
     );
     const items = Array.isArray(data) ? data : [];
     return items
@@ -150,8 +180,8 @@ class FMPService {
     limit = 5
   ): Promise<BalanceSheet[]> {
     const data = await this.fetchFMP<BalanceSheet[]>(
-      `/v3/balance-sheet-statement/${ticker.toUpperCase()}`,
-      { period, limit: String(limit) }
+      `/balance-sheet-statement`,
+      { symbol: ticker.toUpperCase(), period, limit: String(limit) }
     );
     const items = Array.isArray(data) ? data : [];
     return items
@@ -168,8 +198,8 @@ class FMPService {
     limit = 5
   ): Promise<CashFlow[]> {
     const data = await this.fetchFMP<CashFlow[]>(
-      `/v3/cash-flow-statement/${ticker.toUpperCase()}`,
-      { period, limit: String(limit) }
+      `/cash-flow-statement`,
+      { symbol: ticker.toUpperCase(), period, limit: String(limit) }
     );
     const items = Array.isArray(data) ? data : [];
     return items
@@ -188,8 +218,8 @@ class FMPService {
     limit = 1
   ): Promise<FinancialRatios[]> {
     const data = await this.fetchFMP<FinancialRatios[]>(
-      `/v3/ratios/${ticker.toUpperCase()}`,
-      { period, limit: String(limit) }
+      `/ratios`,
+      { symbol: ticker.toUpperCase(), period, limit: String(limit) }
     );
     const items = Array.isArray(data) ? data : [];
     return items
@@ -202,7 +232,8 @@ class FMPService {
 
   async getKeyMetricsTTM(ticker: string): Promise<KeyMetricsTTM> {
     const data = await this.fetchFMP<KeyMetricsTTM[]>(
-      `/v3/key-metrics-ttm/${ticker.toUpperCase()}`
+      `/key-metrics-ttm`,
+      { symbol: ticker.toUpperCase() }
     );
     const items = Array.isArray(data) ? data : [data];
     if (!items.length) return {} as KeyMetricsTTM;
@@ -213,23 +244,68 @@ class FMPService {
   // ─── Valuation ────────────────────────────────────────────────────────────
 
   async getDCF(ticker: string): Promise<DCFResult> {
-    const data = await this.fetchFMP<DCFResult>(
-      `/v3/discounted-cash-flow/${ticker.toUpperCase()}`
+    const data = await this.fetchFMP<Record<string, unknown>[]>(
+      `/discounted-cash-flow`,
+      { symbol: ticker.toUpperCase() }
     );
-    try { return DCFResultSchema.parse(data); }
-    catch { return data as DCFResult; }
+    // Stable API returns an array; extract first element
+    const arr = Array.isArray(data) ? data : [data];
+    if (!arr.length || !arr[0]) return { symbol: ticker, date: "", dcf: 0, Stock_Price: 0 } as DCFResult;
+
+    const raw = arr[0] as Record<string, unknown>;
+    // "Stock Price" (with space) in response → Stock_Price in schema
+    const mapped = {
+      ...raw,
+      Stock_Price: (raw["Stock Price"] ?? raw.Stock_Price ?? 0) as number,
+    };
+
+    try { return DCFResultSchema.parse(mapped); }
+    catch { return mapped as DCFResult; }
   }
 
   // ─── Analyst Data ──────────────────────────────────────────────────────────
 
   async getAnalystRating(ticker: string): Promise<AnalystRating | null> {
     try {
-      const data = await this.fetchFMP<AnalystRating[]>(
-        `/v3/rating/${ticker.toUpperCase()}`
+      const data = await this.fetchFMP<Record<string, unknown>[]>(
+        `/ratings-snapshot`,
+        { symbol: ticker.toUpperCase() }
       );
       const items = Array.isArray(data) ? data : [data];
-      if (!items.length) return null;
-      return AnalystRatingSchema.parse(items[0]);
+      if (!items.length || !items[0]) return null;
+
+      const raw = items[0] as Record<string, unknown>;
+
+      // Map numeric score (1–5) to recommendation label
+      const scoreToRec = (score: number): string => {
+        if (score >= 5) return "Strong Buy";
+        if (score >= 4) return "Buy";
+        if (score >= 3) return "Neutral";
+        if (score >= 2) return "Sell";
+        return "Strong Sell";
+      };
+
+      const mapped = {
+        symbol: raw.symbol as string,
+        date: (raw.date ?? new Date().toISOString()) as string,
+        rating: (raw.rating ?? "") as string,
+        ratingScore: (raw.overallScore ?? 0) as number,
+        ratingRecommendation: scoreToRec((raw.overallScore as number) ?? 0),
+        ratingDetailsDCFScore: (raw.discountedCashFlowScore ?? 0) as number,
+        ratingDetailsDCFRecommendation: scoreToRec((raw.discountedCashFlowScore as number) ?? 0),
+        ratingDetailsROEScore: (raw.returnOnEquityScore ?? 0) as number,
+        ratingDetailsROERecommendation: scoreToRec((raw.returnOnEquityScore as number) ?? 0),
+        ratingDetailsROAScore: (raw.returnOnAssetsScore ?? 0) as number,
+        ratingDetailsROARecommendation: scoreToRec((raw.returnOnAssetsScore as number) ?? 0),
+        ratingDetailsDEScore: (raw.debtToEquityScore ?? 0) as number,
+        ratingDetailsDERecommendation: scoreToRec((raw.debtToEquityScore as number) ?? 0),
+        ratingDetailsPEScore: (raw.priceToEarningsScore ?? 0) as number,
+        ratingDetailsPERecommendation: scoreToRec((raw.priceToEarningsScore as number) ?? 0),
+        ratingDetailsPBScore: (raw.priceToBookScore ?? 0) as number,
+        ratingDetailsPBRecommendation: scoreToRec((raw.priceToBookScore as number) ?? 0),
+      };
+
+      return AnalystRatingSchema.parse(mapped);
     } catch {
       return null;
     }
@@ -237,11 +313,14 @@ class FMPService {
 
   async getPriceTargetSummary(ticker: string): Promise<PriceTargetSummary | null> {
     try {
-      const data = await this.fetchFMP<PriceTargetSummary>(
-        `/v4/price-target-summary`,
+      // /stable/price-target-consensus returns targetHigh/Low/Consensus/Median directly
+      const data = await this.fetchFMP<PriceTargetSummary[]>(
+        `/price-target-consensus`,
         { symbol: ticker.toUpperCase() }
       );
-      return PriceTargetSummarySchema.parse(data);
+      const items = Array.isArray(data) ? data : [data];
+      if (!items.length || !items[0]) return null;
+      return PriceTargetSummarySchema.parse(items[0]);
     } catch {
       return null;
     }
@@ -253,15 +332,42 @@ class FMPService {
     limit = 3
   ): Promise<AnalystEstimate[]> {
     try {
-      const data = await this.fetchFMP<AnalystEstimate[]>(
-        `/v3/analyst-estimates/${ticker.toUpperCase()}`,
-        { period, limit: String(limit) }
+      const data = await this.fetchFMP<Record<string, unknown>[]>(
+        `/analyst-estimates`,
+        { symbol: ticker.toUpperCase(), period, limit: String(limit) }
       );
       const items = Array.isArray(data) ? data : [];
       return items
         .map((item) => {
-          try { return AnalystEstimateSchema.parse(item); }
-          catch { return null; }
+          try {
+            // Stable API dropped the "estimated" prefix from field names
+            const raw = item as Record<string, unknown>;
+            const mapped = {
+              symbol: raw.symbol,
+              date: raw.date,
+              estimatedRevenueLow: raw.estimatedRevenueLow ?? raw.revenueLow ?? 0,
+              estimatedRevenueHigh: raw.estimatedRevenueHigh ?? raw.revenueHigh ?? 0,
+              estimatedRevenueAvg: raw.estimatedRevenueAvg ?? raw.revenueAvg ?? 0,
+              estimatedEbitdaLow: raw.estimatedEbitdaLow ?? raw.ebitdaLow ?? 0,
+              estimatedEbitdaHigh: raw.estimatedEbitdaHigh ?? raw.ebitdaHigh ?? 0,
+              estimatedEbitdaAvg: raw.estimatedEbitdaAvg ?? raw.ebitdaAvg ?? 0,
+              estimatedEbitLow: raw.estimatedEbitLow ?? raw.ebitLow ?? 0,
+              estimatedEbitHigh: raw.estimatedEbitHigh ?? raw.ebitHigh ?? 0,
+              estimatedEbitAvg: raw.estimatedEbitAvg ?? raw.ebitAvg ?? 0,
+              estimatedNetIncomeLow: raw.estimatedNetIncomeLow ?? raw.netIncomeLow ?? 0,
+              estimatedNetIncomeHigh: raw.estimatedNetIncomeHigh ?? raw.netIncomeHigh ?? 0,
+              estimatedNetIncomeAvg: raw.estimatedNetIncomeAvg ?? raw.netIncomeAvg ?? 0,
+              estimatedSgaExpenseLow: raw.estimatedSgaExpenseLow ?? raw.sgaExpenseLow ?? 0,
+              estimatedSgaExpenseHigh: raw.estimatedSgaExpenseHigh ?? raw.sgaExpenseHigh ?? 0,
+              estimatedSgaExpenseAvg: raw.estimatedSgaExpenseAvg ?? raw.sgaExpenseAvg ?? 0,
+              estimatedEpsLow: raw.estimatedEpsLow ?? raw.epsLow ?? 0,
+              estimatedEpsHigh: raw.estimatedEpsHigh ?? raw.epsHigh ?? 0,
+              estimatedEpsAvg: raw.estimatedEpsAvg ?? raw.epsAvg ?? 0,
+              numberAnalystEstimatedRevenue: raw.numberAnalystEstimatedRevenue ?? 0,
+              numberAnalystsEstimatedEps: raw.numberAnalystsEstimatedEps ?? 0,
+            };
+            return AnalystEstimateSchema.parse(mapped);
+          } catch { return null; }
         })
         .filter(Boolean) as AnalystEstimate[];
     } catch {
@@ -276,7 +382,6 @@ class FMPService {
     from?: string,
     to?: string
   ): Promise<HistoricalPrice[]> {
-    // Default: last 1 year
     const toDate = to || new Date().toISOString().split("T")[0];
     const fromDate =
       from ||
@@ -284,50 +389,58 @@ class FMPService {
         .toISOString()
         .split("T")[0];
 
-    const data = await this.fetchFMP<{ historical: HistoricalPrice[] }>(
-      `/v3/historical-price-full/${ticker.toUpperCase()}`,
-      { from: fromDate, to: toDate }
+    // Stable API uses flat array endpoint; returns { symbol, date, price, volume }
+    const data = await this.fetchFMP<Record<string, unknown>[]>(
+      `/historical-price-eod/light`,
+      { symbol: ticker.toUpperCase(), from: fromDate, to: toDate }
     );
 
-    const historical = data?.historical || [];
-    return historical
+    const items = Array.isArray(data) ? data : [];
+    return items
       .map((item) => {
-        try { return HistoricalPriceSchema.parse(item); }
-        catch { return null; }
+        try {
+          const raw = item as Record<string, unknown>;
+          // Map `price` (close equivalent) to `close` for schema compatibility
+          const mapped = {
+            date: raw.date,
+            close: raw.close ?? raw.price ?? 0,
+            open: raw.open ?? raw.price ?? 0,
+            high: raw.high ?? raw.price ?? 0,
+            low: raw.low ?? raw.price ?? 0,
+            adjClose: raw.adjClose ?? raw.price ?? 0,
+            volume: raw.volume ?? 0,
+            unadjustedVolume: raw.unadjustedVolume ?? raw.volume ?? 0,
+            change: raw.change ?? 0,
+            changePercent: raw.changePercent ?? 0,
+          };
+          return HistoricalPriceSchema.parse(mapped);
+        } catch { return null; }
       })
       .filter(Boolean) as HistoricalPrice[];
   }
 
   // ─── News ──────────────────────────────────────────────────────────────────
 
-  async getStockNews(ticker: string, limit = 10): Promise<StockNews[]> {
-    try {
-      const data = await this.fetchFMP<StockNews[]>(
-        `/v3/stock_news`,
-        { tickers: ticker.toUpperCase(), limit: String(limit) }
-      );
-      const items = Array.isArray(data) ? data : [];
-      return items
-        .map((item) => {
-          try { return StockNewsSchema.parse(item); }
-          catch { return null; }
-        })
-        .filter(Boolean) as StockNews[];
-    } catch {
-      return [];
-    }
+  async getStockNews(_ticker: string, _limit = 10): Promise<StockNews[]> {
+    // Stock news requires a higher subscription tier in the stable API.
+    // Return empty array gracefully; the report still works without news.
+    return [];
   }
 
   // ─── Peers ────────────────────────────────────────────────────────────────
 
   async getStockPeers(ticker: string): Promise<string[]> {
     try {
-      const data = await this.fetchFMP<{ symbol: string; peersList: string[] }[]>(
-        `/v4/stock_peers`,
+      const data = await this.fetchFMP<Record<string, unknown>[]>(
+        `/stock-peers`,
         { symbol: ticker.toUpperCase() }
       );
       if (Array.isArray(data) && data.length > 0) {
-        return (data[0].peersList || []).slice(0, 5);
+        // Stable API returns peer objects directly (not wrapped in peersList)
+        return (data as Record<string, unknown>[])
+          .map((p) => p.symbol as string)
+          .filter(Boolean)
+          .slice(0, 5);
       }
       return [];
     } catch {
